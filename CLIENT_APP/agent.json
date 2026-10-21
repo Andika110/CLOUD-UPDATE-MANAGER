@@ -1,0 +1,12 @@
+{
+  "server_url": "https://YOUR-CLOUDFLARE-URL.trycloudflare.com",
+  "agent_id": "",
+  "hostname": "",
+  "target_path": "C:\\Quinos7NEW\\quinos7.jar",
+  "launch_command": "",
+  "proc_filter": "quinos",
+  "poll_interval_sec": 3,
+  "heartbeat_interval_sec": 8,
+  "simulate_mode": false,
+  "skip_pos_check": false
+}

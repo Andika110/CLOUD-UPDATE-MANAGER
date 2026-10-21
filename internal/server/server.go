@@ -49,11 +49,15 @@ func (s *Server) registerRoutes() {
 	// Web Dashboard
 	s.mux.HandleFunc("/", s.handleWebDashboard)
 
-	// Agent / Terminal APIs
+	// Agent / Terminal APIs (Standard & Cloud Compatible)
 	s.mux.HandleFunc("/api/v1/agent/heartbeat", s.handleAgentHeartbeat)
+	s.mux.HandleFunc("/api/v1/agents/heartbeat", s.handleAgentHeartbeat)
 	s.mux.HandleFunc("/api/v1/agent/check-update", s.handleAgentCheckUpdate)
+	s.mux.HandleFunc("/api/v1/agents/tasks/next", s.handleAgentTaskNext)
 	s.mux.HandleFunc("/api/v1/agent/packages/download", s.handleAgentDownloadPackage)
+	s.mux.HandleFunc("/api/v1/packages/", s.handleAgentDownloadPackage)
 	s.mux.HandleFunc("/api/v1/agent/tasks/report", s.handleAgentTaskReport)
+	s.mux.HandleFunc("/api/v1/tasks/", s.handleAgentTaskReport)
 
 	// Admin Dashboard APIs
 	s.mux.HandleFunc("/api/v1/admin/overview", s.handleAdminOverview)

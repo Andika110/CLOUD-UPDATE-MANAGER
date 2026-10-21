@@ -114,13 +114,16 @@ type SystemOverview struct {
 
 // HeartbeatRequest payload sent by client agent
 type HeartbeatRequest struct {
-	OutletCode        string `json:"outlet_code"`
-	TerminalCode      string `json:"terminal_code"`
+	OutletCode        string `json:"outlet_code,omitempty"`
+	TerminalCode      string `json:"terminal_code,omitempty"`
+	AgentID           string `json:"agent_id,omitempty"`
 	Hostname          string `json:"hostname"`
-	IPAddress         string `json:"ip_address"`
-	OSInfo            string `json:"os_info"`
-	CurrentJARVersion string `json:"current_jar_version"`
-	AgentVersion      string `json:"agent_version"`
+	IPAddress         string `json:"ip_address,omitempty"`
+	IP                string `json:"ip,omitempty"`
+	OSInfo            string `json:"os_info,omitempty"`
+	CurrentJARVersion string `json:"current_jar_version,omitempty"`
+	InstalledVersion  string `json:"installed_version,omitempty"`
+	AgentVersion      string `json:"agent_version,omitempty"`
 	POSRunning        bool   `json:"pos_running"`
 	POSPID            *int   `json:"pos_pid,omitempty"`
 	TargetPath        string `json:"target_path"`

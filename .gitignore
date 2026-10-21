@@ -1,5 +1,6 @@
 # Binaries
 *.exe
+!CLIENT_APP/*.exe
 *.exe~
 *.dll
 *.so

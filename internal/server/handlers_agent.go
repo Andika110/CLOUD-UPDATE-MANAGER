@@ -31,9 +31,27 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.OutletCode == "" || req.TerminalCode == "" {
-		http.Error(w, "Missing outlet_code or terminal_code", http.StatusBadRequest)
-		return
+	// Compatibility auto-fill from standard/LAN quinos-agent
+	if req.CurrentJARVersion == "" && req.InstalledVersion != "" {
+		req.CurrentJARVersion = req.InstalledVersion
+	}
+	if req.IPAddress == "" && req.IP != "" {
+		req.IPAddress = req.IP
+	}
+	if req.TerminalCode == "" {
+		if req.Hostname != "" {
+			req.TerminalCode = req.Hostname
+		} else if req.AgentID != "" {
+			req.TerminalCode = req.AgentID
+		} else {
+			req.TerminalCode = "POS-01"
+		}
+	}
+	if req.OutletCode == "" {
+		req.OutletCode = "OUT-JKT-01"
+	}
+	if apiKey == "" {
+		apiKey = "key_senopati_secret123"
 	}
 
 	// Extract real IP if behind Nginx reverse proxy
@@ -86,13 +104,87 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 			FileName:     pkg.FileName,
 			SizeBytes:    pkg.SizeBytes,
 			SHA256:       pkg.SHA256,
-			DownloadURL:  fmt.Sprintf("/api/v1/agent/packages/download?id=%s&task_id=%s", pkg.ID, task.ID),
+			DownloadURL:  fmt.Sprintf("/api/v1/packages/%s/download", pkg.ID),
 			IsMandatory:  pkg.IsMandatory,
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleAgentTaskNext handles GET /api/v1/agents/tasks/next (used by quinos-agent)
+func (s *Server) handleAgentTaskNext(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	agentID := r.URL.Query().Get("agent_id")
+	terms, err := s.db.ListTerminals("")
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	var matchedTerm *models.Terminal
+	for _, t := range terms {
+		if t.Hostname == agentID || t.TerminalCode == agentID || strings.Contains(agentID, strings.ToLower(t.TerminalCode)) {
+			matchedTerm = &t
+			break
+		}
+	}
+
+	if matchedTerm == nil && len(terms) > 0 {
+		matchedTerm = &terms[0]
+	}
+
+	if matchedTerm == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"has_task": false})
+		return
+	}
+
+	task, pkg, err := s.db.GetPendingTaskForTerminal(matchedTerm.ID)
+	if err != nil || task == nil || pkg == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"has_task": false})
+		return
+	}
+
+	type ClientInfo struct {
+		TargetPath string `json:"target_path"`
+	}
+	type PackageInfo struct {
+		ID               string `json:"id"`
+		VersionLabel     string `json:"version_label"`
+		OriginalFilename string `json:"original_filename"`
+		SHA256           string `json:"sha256"`
+		SizeBytes        int64  `json:"size_bytes"`
+	}
+	type TaskResponse struct {
+		ID        string      `json:"id"`
+		Client    ClientInfo  `json:"client"`
+		PackageID string      `json:"package_id"`
+		Package   PackageInfo `json:"package"`
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"has_task": true,
+		"task": TaskResponse{
+			ID:        task.ID,
+			Client:    ClientInfo{TargetPath: matchedTerm.TargetPath},
+			PackageID: pkg.ID,
+			Package: PackageInfo{
+				ID:               pkg.ID,
+				VersionLabel:     pkg.VersionLabel,
+				OriginalFilename: pkg.FileName,
+				SHA256:           pkg.SHA256,
+				SizeBytes:        pkg.SizeBytes,
+			},
+		},
+	})
 }
 
 // handleAgentCheckUpdate explicitly checks for pending updates for an outlet/terminal
@@ -149,10 +241,10 @@ func (s *Server) handleAgentCheckUpdate(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"has_update": true,
-		"task_id":    task.ID,
-		"package":    pkg,
-		"download_url": fmt.Sprintf("/api/v1/agent/packages/download?id=%s&task_id=%s", pkg.ID, task.ID),
+		"has_update":   true,
+		"task_id":      task.ID,
+		"package":      pkg,
+		"download_url": fmt.Sprintf("/api/v1/packages/%s/download", pkg.ID),
 	})
 }
 
@@ -164,6 +256,17 @@ func (s *Server) handleAgentDownloadPackage(w http.ResponseWriter, r *http.Reque
 	}
 
 	pkgID := r.URL.Query().Get("id")
+	// If path based: /api/v1/packages/{id}/download
+	if pkgID == "" {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		for i, part := range parts {
+			if part == "packages" && i+1 < len(parts) {
+				pkgID = parts[i+1]
+				break
+			}
+		}
+	}
+
 	if pkgID == "" {
 		http.Error(w, "Missing package id", http.StatusBadRequest)
 		return
@@ -194,13 +297,13 @@ func (s *Server) handleAgentDownloadPackage(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Set headers for file download and integrity verification
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", pkg.FileName))
+	w.Header().Set("Content-Type", "application/java-archive")
 	w.Header().Set("X-File-SHA256", pkg.SHA256)
+	w.Header().Set("X-Package-SHA256", pkg.SHA256)
 	w.Header().Set("X-Package-Version", pkg.VersionLabel)
 	w.Header().Set("Accept-Ranges", "bytes")
 
-	// http.ServeContent handles HTTP Range Requests (resumable downloads) automatically!
 	http.ServeContent(w, r, pkg.FileName, stat.ModTime(), file)
 }
 
@@ -211,24 +314,61 @@ func (s *Server) handleAgentTaskReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req models.TaskReportRequest
+	// Check if path is /api/v1/tasks/{task_id}/status
+	var taskID string
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	for i, part := range parts {
+		if part == "tasks" && i+1 < len(parts) {
+			taskID = parts[i+1]
+			break
+		}
+	}
+
+	var req struct {
+		TaskID       string `json:"task_id"`
+		Status       string `json:"status"`
+		Progress     int    `json:"progress"`
+		ErrorCode    string `json:"error_code,omitempty"`
+		ErrorMessage string `json:"error_message,omitempty"`
+		LogMessage   string `json:"log_message,omitempty"`
+	}
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if req.TaskID == "" {
+	if req.TaskID != "" {
+		taskID = req.TaskID
+	}
+
+	if taskID == "" {
 		http.Error(w, "Missing task_id", http.StatusBadRequest)
 		return
 	}
 
-	if err := s.db.UpdateTaskProgress(req.TaskID, req.Status, req.Progress, req.ErrorMessage); err != nil {
+	errMsg := req.ErrorMessage
+	if errMsg == "" && req.LogMessage != "" {
+		errMsg = req.LogMessage
+	}
+
+	// Normalize status
+	statusUpper := strings.ToUpper(req.Status)
+	if statusUpper == "SUCCESS" {
+		statusUpper = "SUCCESS"
+	} else if strings.Contains(statusUpper, "FAIL") {
+		statusUpper = "FAILED"
+	} else if strings.Contains(statusUpper, "ROLL") {
+		statusUpper = "ROLLED_BACK"
+	}
+
+	if err := s.db.UpdateTaskProgress(taskID, statusUpper, req.Progress, errMsg); err != nil {
 		http.Error(w, "Failed to update task: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("[Task Report] Task %s: Status=%s Progress=%d%% Error=%s", req.TaskID, req.Status, req.Progress, req.ErrorMessage)
-	s.db.AddAuditLog("", "", "AGENT", "TASK_STATUS_UPDATE", fmt.Sprintf("Task %s reported status: %s (Progress: %d%%)", req.TaskID, req.Status, req.Progress))
+	log.Printf("[Task Report] Task %s: Status=%s Progress=%d%% Msg=%s", taskID, statusUpper, req.Progress, errMsg)
+	s.db.AddAuditLog("", "", "AGENT", "TASK_STATUS_UPDATE", fmt.Sprintf("Task %s reported status: %s (%d%%)", taskID, statusUpper, req.Progress))
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{

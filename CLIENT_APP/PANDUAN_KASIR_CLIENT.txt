@@ -1,0 +1,48 @@
+================================================================================
+          PANDUAN PEMASANGAN QUINOS UPDATE AGENT (CLIENT KASIR)
+================================================================================
+
+Folder CLIENT_APP ini dirancang untuk dipasang pada setiap komputer kasir Windows
+(POS-01, POS-02, dst) di outlet/cabang restoran.
+
+--------------------------------------------------------------------------------
+LANGKAH 1: SALIN FOLDER INI KE PC KASIR
+--------------------------------------------------------------------------------
+1. Salin seluruh isi folder CLIENT_APP ini ke harddisk PC Kasir.
+   Contoh lokasi yang disarankan:
+   C:\QuinosClient\   atau   C:\CLIENT_APP\
+
+--------------------------------------------------------------------------------
+LANGKAH 2: ATUR ALAMAT SERVER PADA FILE agent.json
+--------------------------------------------------------------------------------
+1. Buka file "agent.json" menggunakan Notepad.
+2. Ubah baris "server_url" menjadi URL Cloudflare Tunnel server Anda:
+   Contoh:
+   "server_url": "https://widescreen-adware-convinced-dot.trycloudflare.com",
+
+3. Sesuaikan baris "target_path" jika lokasi file JAR kasir berbeda:
+   Contoh:
+   "target_path": "C:\\Quinos7NEW\\quinos7.jar",
+
+4. Simpan file (Ctrl + S).
+
+--------------------------------------------------------------------------------
+LANGKAH 3: CARA MENJALANKAN AGENT
+--------------------------------------------------------------------------------
+- UNTUK PENGUJIAN:
+  Klik ganda file "JALANKAN_CLIENT.bat".
+  Jendela terminal akan terbuka dan status koneksi akan terlihat.
+
+- UNTUK PEMASANGAN PERMANEN DI TOKO (REKOMENDASI):
+  Klik ganda file "PASANG_AUTOSTART_WINDOWS.bat" CUKUP SATU KALI SAJA.
+  Script ini akan membuat agen berjalan otomatis di latar belakang setiap kali
+  komputer kasir dinyalakan atau di-restart.
+
+--------------------------------------------------------------------------------
+FITUR KEAMANAN AGENT:
+--------------------------------------------------------------------------------
+- Tidak akan mematikan paksa aplikasi saat kasir sedang transaksi.
+- Otomatis membuat backup lokal (quinos.jar.bak) sebelum menimpa file.
+- Verifikasi checksum SHA-256 sebelum file dipasang.
+- Otomatis rollback ke versi lama jika aplikasi baru crash.
+================================================================================
