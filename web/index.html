@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quinos Cloud Update Manager — Central VPS Console</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React & React DOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- Babel Compiler -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              100: '#e0e7ff',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+              900: '#312e81',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    body {
+      background-color: #090d16;
+      color: #f1f5f9;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    .pulse-dot {
+      box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+      animation: pulse-ring 1.8s infinite cubic-bezier(0.66, 0, 0, 1);
+    }
+    @keyframes pulse-ring {
+      to { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+    }
+  </style>
+</head>
+<body class="min-h-screen antialiased selection:bg-indigo-500 selection:text-white">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    function App() {
+      const [activeTab, setActiveTab] = useState('outlets'); // 'outlets', 'terminals', 'packages', 'deployments', 'logs'
+      const [overview, setOverview] = useState(null);
+      const [outlets, setOutlets] = useState([]);
+      const [terminals, setTerminals] = useState([]);
+      const [packages, setPackages] = useState([]);
+      const [deployments, setDeployments] = useState([]);
+      const [logs, setLogs] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [autoRefresh, setAutoRefresh] = useState(true);
+      const [filterGroup, setFilterGroup] = useState('ALL');
+
+      // Modals
+      const [showUploadModal, setShowUploadModal] = useState(false);
+      const [showDeployModal, setShowDeployModal] = useState(false);
+      const [showOutletModal, setShowOutletModal] = useState(false);
+
+      // Upload Form
+      const [uploadFile, setUploadFile] = useState(null);
+      const [uploadVersion, setUploadVersion] = useState('');
+      const [uploadChangelog, setUploadChangelog] = useState('');
+      const [uploadChannel, setUploadChannel] = useState('canary');
+      const [uploadMandatory, setUploadMandatory] = useState(false);
+      const [isUploading, setIsUploading] = useState(false);
+
+      // Deploy Form
+      const [selectedPkgId, setSelectedPkgId] = useState('');
+      const [targetGroup, setTargetGroup] = useState('canary');
+      const [deployNotes, setDeployNotes] = useState('');
+      const [isDeploying, setIsDeploying] = useState(false);
+
+      // Outlet Form
+      const [newOutletCode, setNewOutletCode] = useState('');
+      const [newOutletName, setNewOutletName] = useState('');
+      const [newOutletGroup, setNewOutletGroup] = useState('stable');
+
+      const fetchData = async () => {
+        try {
+          const [ovRes, outRes, termRes, pkgRes, depRes, logRes] = await Promise.all([
+            fetch('/api/v1/admin/overview').then(r => r.json()),
+            fetch('/api/v1/admin/outlets').then(r => r.json()),
+            fetch('/api/v1/admin/terminals').then(r => r.json()),
+            fetch('/api/v1/admin/packages').then(r => r.json()),
+            fetch('/api/v1/admin/deployments').then(r => r.json()),
+            fetch('/api/v1/admin/logs?limit=50').then(r => r.json())
+          ]);
+
+          setOverview(ovRes);
+          setOutlets(outRes || []);
+          setTerminals(termRes || []);
+          setPackages(pkgRes || []);
+          setDeployments(depRes || []);
+          setLogs(logRes || []);
+          setLoading(false);
+        } catch (err) {
+          console.error("Fetch error:", err);
+        }
+      };
+
+      useEffect(() => {
+        fetchData();
+        const interval = setInterval(() => {
+          if (autoRefresh) fetchData();
+        }, 3000);
+        return () => clearInterval(interval);
+      }, [autoRefresh]);
+
+      const handleUploadPackage = async (e) => {
+        e.preventDefault();
+        if (!uploadFile) return alert("Pilih file JAR terlebih dahulu!");
+        
+        setIsUploading(true);
+        const formData = new FormData();
+        formData.append('file', uploadFile);
+        formData.append('version_label', uploadVersion);
+        formData.append('changelog', uploadChangelog);
+        formData.append('release_channel', uploadChannel);
+        formData.append('is_mandatory', uploadMandatory ? '1' : '0');
+
+        try {
+          const res = await fetch('/api/v1/admin/packages/upload', {
+            method: 'POST',
+            body: formData
+          });
+          if (!res.ok) throw new Error(await res.text());
+          alert("Paket JAR berhasil diunggah!");
+          setShowUploadModal(false);
+          setUploadFile(null);
+          setUploadVersion('');
+          setUploadChangelog('');
+          fetchData();
+        } catch (err) {
+          alert("Gagal upload: " + err.message);
+        } finally {
+          setIsUploading(false);
+        }
+      };
+
+      const handleCreateDeployment = async (e) => {
+        e.preventDefault();
+        if (!selectedPkgId) return alert("Pilih versi paket yang ingin di-deploy!");
+
+        setIsDeploying(true);
+        try {
+          const res = await fetch('/api/v1/admin/deployments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              package_id: selectedPkgId,
+              target_group: targetGroup,
+              notes: deployNotes
+            })
+          });
+          if (!res.ok) throw new Error(await res.text());
+          alert("Rollout deployment berhasil diluncurkan!");
+          setShowDeployModal(false);
+          fetchData();
+        } catch (err) {
+          alert("Gagal deploy: " + err.message);
+        } finally {
+          setIsDeploying(false);
+        }
+      };
+
+      const handleCreateOutlet = async (e) => {
+        e.preventDefault();
+        try {
+          const res = await fetch('/api/v1/admin/outlets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              outlet_code: newOutletCode,
+              name: newOutletName,
+              release_group: newOutletGroup
+            })
+          });
+          if (!res.ok) throw new Error(await res.text());
+          alert("Outlet cabang baru berhasil ditambahkan!");
+          setShowOutletModal(false);
+          setNewOutletCode('');
+          setNewOutletName('');
+          fetchData();
+        } catch (err) {
+          alert("Gagal membuat outlet: " + err.message);
+        }
+      };
+
+      const handleTerminalAction = async (terminalId, command) => {
+        if (!confirm(`Kirim perintah remote '${command}' ke terminal ini?`)) return;
+        try {
+          const res = await fetch('/api/v1/admin/terminals/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ terminal_id: terminalId, command })
+          });
+          if (!res.ok) throw new Error(await res.text());
+          alert("Perintah berhasil dimasukkan ke antrean terminal!");
+          fetchData();
+        } catch (err) {
+          alert("Gagal kirim perintah: " + err.message);
+        }
+      };
+
+      return (
+        <div className="flex flex-col min-h-screen">
+          {/* Top Navbar */}
+          <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-40">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+                  <span className="font-extrabold text-white text-lg">Q</span>
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h1 className="font-bold text-white text-lg tracking-tight">Quinos Cloud Update Manager</h1>
+                    <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">VPS Cloud Hub</span>
+                  </div>
+                  <p className="text-xs text-slate-400">Multi-Outlet Centralized POS Deployment Console</p>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-4">
+                <div className="flex items-center space-x-2 text-xs text-slate-300 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 pulse-dot"></span>
+                  <span>VPS Live: {overview?.server_time || 'Syncing...'}</span>
+                </div>
+
+                <button 
+                  onClick={() => setAutoRefresh(!autoRefresh)}
+                  className={`text-xs px-3 py-1.5 rounded-lg border transition flex items-center space-x-1.5 ${
+                    autoRefresh ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/30' : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}>
+                  <span>{autoRefresh ? 'Auto Sync ON' : 'Paused'}</span>
+                </button>
+
+                <button 
+                  onClick={() => setShowUploadModal(true)}
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3.5 py-1.5 rounded-lg shadow-sm transition flex items-center space-x-1">
+                  <span>+ Upload JAR</span>
+                </button>
+
+                <button 
+                  onClick={() => setShowDeployModal(true)}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3.5 py-1.5 rounded-lg shadow-sm transition flex items-center space-x-1">
+                  <span>🚀 Launch Rollout</span>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {/* Metrics Overview Ribbon */}
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 w-full">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <span className="text-xs text-slate-400 font-medium">Total Outlet / Cabang</span>
+                <div className="mt-1 flex items-baseline space-x-2">
+                  <span className="text-2xl font-bold text-white">{overview?.total_outlets || 0}</span>
+                  <span className="text-xs text-emerald-400 font-medium">{overview?.active_outlets || 0} Active</span>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <span className="text-xs text-slate-400 font-medium">Terminal Kasir (POS)</span>
+                <div className="mt-1 flex items-baseline space-x-2">
+                  <span className="text-2xl font-bold text-white">{overview?.total_terminals || 0}</span>
+                  <span className="text-xs text-emerald-400 font-medium">{overview?.online_terminals || 0} Online</span>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <span className="text-xs text-slate-400 font-medium">Kasir Buka (Java PID)</span>
+                <div className="mt-1 flex items-baseline space-x-2">
+                  <span className="text-2xl font-bold text-amber-400">{overview?.pos_running_count || 0}</span>
+                  <span className="text-xs text-slate-400">POS Running</span>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <span className="text-xs text-slate-400 font-medium">Versi Stabil Terpasang</span>
+                <div className="mt-1 flex items-baseline space-x-2">
+                  <span className="text-lg font-bold text-indigo-400 truncate">{overview?.latest_version || 'v2.4.2'}</span>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <span className="text-xs text-slate-400 font-medium">Active Rollouts</span>
+                <div className="mt-1 flex items-baseline space-x-2">
+                  <span className="text-2xl font-bold text-violet-400">{overview?.active_deployments || 0}</span>
+                  <span className="text-xs text-slate-400">In Progress</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Navigation Tabs */}
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6 w-full">
+            <div className="flex border-b border-slate-800 space-x-6 text-sm font-medium">
+              {[
+                { id: 'outlets', label: '🏢 Outlets & Rollout Rings', count: outlets.length },
+                { id: 'terminals', label: '💻 Terminals (All POS)', count: terminals.length },
+                { id: 'packages', label: '📦 JAR Packages', count: packages.length },
+                { id: 'deployments', label: '🚀 Deployments & Rollouts', count: deployments.length },
+                { id: 'logs', label: '📜 Audit & Security Logs', count: logs.length }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`pb-3 px-1 border-b-2 transition flex items-center space-x-2 ${
+                    activeTab === tab.id 
+                      ? 'border-indigo-500 text-indigo-400 font-semibold' 
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}>
+                  <span>{tab.label}</span>
+                  <span className={`text-[11px] px-2 py-0.5 rounded-full ${
+                    activeTab === tab.id ? 'bg-indigo-500/20 text-indigo-300' : 'bg-slate-800 text-slate-400'
+                  }`}>{tab.count}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Main Content View */}
+          <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1">
+            {/* TAB: OUTLETS */}
+            {activeTab === 'outlets' && (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-xs text-slate-400">Filter Ring:</span>
+                    {['ALL', 'canary', 'pilot', 'stable'].map(g => (
+                      <button 
+                        key={g} 
+                        onClick={() => setFilterGroup(g)}
+                        className={`text-xs px-2.5 py-1 rounded-md border capitalize ${
+                          filterGroup === g ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-slate-800 text-slate-400 border-slate-700'
+                        }`}>{g}</button>
+                    ))}
+                  </div>
+                  <button 
+                    onClick={() => setShowOutletModal(true)}
+                    className="text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-3 py-1.5 rounded-lg transition">
+                    + Tambah Outlet Cabang
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {outlets
+                    .filter(o => filterGroup === 'ALL' || o.release_group === filterGroup)
+                    .map(outlet => (
+                      <div key={outlet.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5 hover:border-slate-700 transition">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <span className="text-[10px] font-mono uppercase bg-slate-800 px-2 py-0.5 rounded text-slate-300 border border-slate-700">
+                              {outlet.outlet_code}
+                            </span>
+                            <h3 className="font-semibold text-white text-base mt-2">{outlet.name}</h3>
+                          </div>
+                          <span className={`text-[10px] uppercase font-bold px-2.5 py-1 rounded-full border ${
+                            outlet.release_group === 'canary' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' :
+                            outlet.release_group === 'pilot' ? 'bg-sky-500/10 text-sky-400 border-sky-500/30' :
+                            'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                          }`}>
+                            Ring: {outlet.release_group}
+                          </span>
+                        </div>
+
+                        <div className="mt-4 pt-4 border-t border-slate-800/80 flex justify-between text-xs text-slate-400">
+                          <div>
+                            <span>Kasir: </span>
+                            <strong className="text-white">{outlet.online_count} Online</strong> / {outlet.terminal_count} Total
+                          </div>
+                          <div>
+                            <span>Timezone: </span>
+                            <span className="text-slate-300">{outlet.timezone}</span>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/60 flex items-center justify-between text-xs">
+                          <span className="text-slate-500 font-mono text-[11px] truncate max-w-[200px]">Key: {outlet.api_key}</span>
+                          <button 
+                            onClick={() => { navigator.clipboard.writeText(outlet.api_key); alert("API Key disalin!"); }}
+                            className="text-indigo-400 hover:text-indigo-300 text-[11px] font-medium">
+                            Copy Key
+                          </button>
+                        </div>
+                      </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* TAB: TERMINALS */}
+            {activeTab === 'terminals' && (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-950/70 border-b border-slate-800 text-slate-400 uppercase font-semibold">
+                      <tr>
+                        <th className="px-4 py-3.5">Terminal / Host</th>
+                        <th className="px-4 py-3.5">Outlet Cabang</th>
+                        <th className="px-4 py-3.5">Status Koneksi</th>
+                        <th className="px-4 py-3.5">Versi JAR Aktif</th>
+                        <th className="px-4 py-3.5">Aplikasi POS Java</th>
+                        <th className="px-4 py-3.5">Update Status</th>
+                        <th className="px-4 py-3.5 text-right">Aksi Remote</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {terminals.map(t => (
+                        <tr key={t.id} className="hover:bg-slate-800/30 transition">
+                          <td className="px-4 py-3">
+                            <div className="font-semibold text-white text-sm">{t.terminal_code}</div>
+                            <div className="text-slate-400 font-mono text-[11px]">{t.hostname} ({t.ip_address})</div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="font-medium text-slate-200">{t.outlet_name}</div>
+                            <span className="text-[10px] font-mono text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">{t.outlet_code}</span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${
+                              t.status === 'Online' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'
+                            }`}>
+                              <span className={`w-1.5 h-1.5 mr-1.5 rounded-full ${t.status === 'Online' ? 'bg-emerald-500' : 'bg-rose-500'}`}></span>
+                              {t.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 font-mono font-medium text-indigo-400">
+                            {t.current_jar_version}
+                          </td>
+                          <td className="px-4 py-3">
+                            {t.pos_running ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[11px]">
+                                Java Open {t.pos_pid ? `(PID: ${t.pos_pid})` : ''}
+                              </span>
+                            ) : (
+                              <span className="text-slate-500 text-[11px]">Tutup / Idle</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`text-[11px] font-mono px-2 py-0.5 rounded ${
+                              t.update_status === 'SUCCESS' ? 'bg-emerald-500/10 text-emerald-400' :
+                              t.update_status === 'FAILED' || t.update_status === 'ROLLED_BACK' ? 'bg-rose-500/10 text-rose-400' :
+                              t.update_status === 'DOWNLOADING' || t.update_status === 'INSTALLING' ? 'bg-sky-500/10 text-sky-400 animate-pulse' :
+                              'text-slate-400'
+                            }`}>
+                              {t.update_status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right space-x-1">
+                            <button 
+                              onClick={() => handleTerminalAction(t.id, 'CHECK_UPDATE')}
+                              className="text-[11px] px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700">
+                              Check
+                            </button>
+                            <button 
+                              onClick={() => handleTerminalAction(t.id, 'RESTART_POS')}
+                              className="text-[11px] px-2 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded border border-slate-700">
+                              Restart POS
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB: PACKAGES */}
+            {activeTab === 'packages' && (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs text-slate-400">Total {packages.length} paket Quinos JAR terdaftar di storage Cloud VPS.</span>
+                  <button 
+                    onClick={() => setShowUploadModal(true)}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shadow-sm">
+                    + Upload File JAR Baru
+                  </button>
+                </div>
+
+                <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-950/70 border-b border-slate-800 text-slate-400 uppercase font-semibold">
+                      <tr>
+                        <th className="px-4 py-3.5">Versi Rilis</th>
+                        <th className="px-4 py-3.5">File Name / Size</th>
+                        <th className="px-4 py-3.5">Target Channel</th>
+                        <th className="px-4 py-3.5">Checksum SHA-256</th>
+                        <th className="px-4 py-3.5">Changelog</th>
+                        <th className="px-4 py-3.5 text-right">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {packages.map(pkg => (
+                        <tr key={pkg.id} className="hover:bg-slate-800/30 transition">
+                          <td className="px-4 py-3 font-semibold text-white">
+                            {pkg.version_label}
+                            {pkg.is_mandatory && (
+                              <span className="ml-2 text-[10px] bg-rose-500/20 text-rose-400 border border-rose-500/30 px-1.5 py-0.2 rounded font-bold">MANDATORY</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="text-slate-200">{pkg.file_name}</div>
+                            <div className="text-slate-500 text-[11px]">{pkg.size_mb}</div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="text-[10px] font-mono uppercase bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700">
+                              {pkg.release_channel}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 font-mono text-[11px] text-slate-400">
+                            {pkg.sha256 ? `${pkg.sha256.substring(0, 16)}...` : '-'}
+                          </td>
+                          <td className="px-4 py-3 text-slate-400 max-w-xs truncate">
+                            {pkg.changelog || '-'}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <button 
+                              onClick={() => { setSelectedPkgId(pkg.id); setShowDeployModal(true); }}
+                              className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-2.5 py-1 rounded font-medium">
+                              Deploy Ini
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB: DEPLOYMENTS */}
+            {activeTab === 'deployments' && (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs text-slate-400">Riwayat dan progres peluncuran update per ring / cabang.</span>
+                  <button 
+                    onClick={() => setShowDeployModal(true)}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shadow-sm">
+                    🚀 Launch New Rollout
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {deployments.map(dep => {
+                    const percent = dep.total_tasks > 0 ? Math.round((dep.success_count / dep.total_tasks) * 100) : 0;
+                    return (
+                      <div key={dep.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <div className="flex items-center space-x-2">
+                              <span className="font-mono text-xs text-slate-400 bg-slate-800 px-2 py-0.5 rounded">{dep.id}</span>
+                              <h4 className="font-bold text-white text-base">Versi: {dep.package_version}</h4>
+                              <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                                Target: {dep.target_group}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-400 mt-1">{dep.notes || 'No description notes provided'}</p>
+                          </div>
+
+                          <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                            dep.status === 'Completed' ? 'bg-emerald-500/10 text-emerald-400' :
+                            dep.status === 'Active' ? 'bg-indigo-500/10 text-indigo-400 animate-pulse' :
+                            'bg-slate-800 text-slate-400'
+                          }`}>
+                            {dep.status}
+                          </span>
+                        </div>
+
+                        {/* Progress Bar */}
+                        <div className="mt-4">
+                          <div className="flex justify-between text-xs text-slate-400 mb-1">
+                            <span>Progres Kasir ({dep.success_count} dari {dep.total_tasks} selesai)</span>
+                            <span className="font-mono text-white">{percent}%</span>
+                          </div>
+                          <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                            <div className="bg-gradient-to-r from-indigo-500 to-emerald-500 h-2 rounded-full transition-all duration-500" style={{ width: `${percent}%` }}></div>
+                          </div>
+                        </div>
+
+                        {dep.failed_count > 0 && (
+                          <div className="mt-2 text-xs text-rose-400 flex items-center space-x-1">
+                            <span>⚠️ {dep.failed_count} terminal mengalami kegagalan / auto-rollback.</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* TAB: AUDIT LOGS */}
+            {activeTab === 'logs' && (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden font-mono text-xs">
+                <div className="p-3 bg-slate-950/70 border-b border-slate-800 text-slate-400 uppercase text-[10px] font-semibold">
+                  Live Audit Trail & Telemetry (Latest 50 Events)
+                </div>
+                <div className="p-4 space-y-2 max-h-[600px] overflow-y-auto">
+                  {logs.map(log => (
+                    <div key={log.id} className="flex items-start space-x-3 text-slate-300 border-b border-slate-800/40 pb-2">
+                      <span className="text-slate-500 text-[11px] whitespace-nowrap">{log.created_at ? log.created_at.substring(11, 19) : ''}</span>
+                      <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                        log.actor === 'ADMIN' ? 'bg-indigo-500/20 text-indigo-400' :
+                        log.actor === 'AGENT' ? 'bg-emerald-500/20 text-emerald-400' :
+                        'bg-slate-800 text-slate-400'
+                      }`}>{log.actor}</span>
+                      <span className="text-amber-400 font-semibold">{log.action}:</span>
+                      <span className="text-slate-400 flex-1">{log.details}</span>
+                      {log.outlet_code && <span className="text-[10px] text-slate-500 bg-slate-800/60 px-1 rounded">{log.outlet_code}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </main>
+
+          {/* MODAL: UPLOAD JAR */}
+          {showUploadModal && (
+            <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl">
+                <div className="flex justify-between items-center pb-4 border-b border-slate-800">
+                  <h3 className="font-bold text-white text-base">Unggah Master Quinos JAR Baru</h3>
+                  <button onClick={() => setShowUploadModal(false)} className="text-slate-400 hover:text-white">✕</button>
+                </div>
+                <form onSubmit={handleUploadPackage} className="mt-4 space-y-4 text-xs">
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">File Artefak (.jar)</label>
+                    <input 
+                      type="file" 
+                      accept=".jar"
+                      onChange={e => setUploadFile(e.target.files[0])}
+                      required
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-300 file:bg-indigo-600 file:border-0 file:rounded-md file:text-white file:text-xs file:px-3 file:py-1 file:mr-3"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Versi Label (e.g. v2.5.0-STABLE)</label>
+                    <input 
+                      type="text" 
+                      placeholder="v2.5.0"
+                      value={uploadVersion}
+                      onChange={e => setUploadVersion(e.target.value)}
+                      required
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Target Release Channel</label>
+                    <select 
+                      value={uploadChannel} 
+                      onChange={e => setUploadChannel(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white">
+                      <option value="canary">Canary (1-2 Pilot Stores)</option>
+                      <option value="pilot">Pilot (Grup Toko Percontohan)</option>
+                      <option value="stable">Stable (Siap untuk Seluruh Cabang)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Catatan Rilis / Changelog</label>
+                    <textarea 
+                      rows="3"
+                      placeholder="Daftar bugfix, penambahan menu, atau fitur baru..."
+                      value={uploadChangelog}
+                      onChange={e => setUploadChangelog(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white"
+                    ></textarea>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <input 
+                      type="checkbox" 
+                      id="mand"
+                      checked={uploadMandatory}
+                      onChange={e => setUploadMandatory(e.target.checked)}
+                      className="rounded border-slate-800 text-indigo-600 focus:ring-0"
+                    />
+                    <label htmlFor="mand" className="text-slate-300 font-medium">Paksa Update (Mandatory / Force Update)</label>
+                  </div>
+
+                  <div className="pt-4 flex justify-end space-x-2 border-t border-slate-800">
+                    <button 
+                      type="button" 
+                      onClick={() => setShowUploadModal(false)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg font-medium">
+                      Batal
+                    </button>
+                    <button 
+                      type="submit" 
+                      disabled={isUploading}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg font-semibold">
+                      {isUploading ? 'Menghitung SHA-256 & Mengunggah...' : 'Unggah ke Cloud'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL: LAUNCH ROLLOUT */}
+          {showDeployModal && (
+            <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl">
+                <div className="flex justify-between items-center pb-4 border-b border-slate-800">
+                  <h3 className="font-bold text-white text-base">Luncurkan Rollout Versi JAR</h3>
+                  <button onClick={() => setShowDeployModal(false)} className="text-slate-400 hover:text-white">✕</button>
+                </div>
+                <form onSubmit={handleCreateDeployment} className="mt-4 space-y-4 text-xs">
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Pilih Paket JAR</label>
+                    <select 
+                      value={selectedPkgId} 
+                      onChange={e => setSelectedPkgId(e.target.value)}
+                      required
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white">
+                      <option value="">-- Pilih Versi --</option>
+                      {packages.map(p => (
+                        <option key={p.id} value={p.id}>{p.version_label} ({p.file_name} - {p.size_mb})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Target Sasaran Deployment</label>
+                    <select 
+                      value={targetGroup} 
+                      onChange={e => setTargetGroup(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white">
+                      <option value="canary">Ring: Canary (Toko Khusus Uji Coba)</option>
+                      <option value="pilot">Ring: Pilot + Canary</option>
+                      <option value="all">Semua Cabang (Global Rollout)</option>
+                      {outlets.map(o => (
+                        <option key={o.id} value={`outlet:${o.outlet_code}`}>Cabang Spesifik: {o.name} ({o.outlet_code})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Catatan Rollout</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. Rollout patch promo weekend"
+                      value={deployNotes}
+                      onChange={e => setDeployNotes(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white"
+                    />
+                  </div>
+
+                  <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-amber-300 text-[11px]">
+                    ℹ️ Agent di setiap terminal POS akan mendownload paket saat safe window, membuat cadangan backup lokal, dan melakukan rollback otomatis jika terjadi crash saat runtime.
+                  </div>
+
+                  <div className="pt-4 flex justify-end space-x-2 border-t border-slate-800">
+                    <button 
+                      type="button" 
+                      onClick={() => setShowDeployModal(false)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg font-medium">
+                      Batal
+                    </button>
+                    <button 
+                      type="submit" 
+                      disabled={isDeploying}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg font-semibold">
+                      {isDeploying ? 'Membuat Tasks...' : 'Mulai Rollout Sekarang'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL: ADD OUTLET */}
+          {showOutletModal && (
+            <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+                <div className="flex justify-between items-center pb-4 border-b border-slate-800">
+                  <h3 className="font-bold text-white text-base">Tambah Outlet Cabang Baru</h3>
+                  <button onClick={() => setShowOutletModal(false)} className="text-slate-400 hover:text-white">✕</button>
+                </div>
+                <form onSubmit={handleCreateOutlet} className="mt-4 space-y-4 text-xs">
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Kode Cabang (Unique)</label>
+                    <input 
+                      type="text" 
+                      placeholder="OUT-BDG-01"
+                      value={newOutletCode}
+                      onChange={e => setNewOutletCode(e.target.value.toUpperCase())}
+                      required
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Nama Cabang Resto</label>
+                    <input 
+                      type="text" 
+                      placeholder="Quinos Paris Van Java Bandung"
+                      value={newOutletName}
+                      onChange={e => setNewOutletName(e.target.value)}
+                      required
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Deployment Ring</label>
+                    <select 
+                      value={newOutletGroup} 
+                      onChange={e => setNewOutletGroup(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white">
+                      <option value="stable">Stable (Standard Outlet)</option>
+                      <option value="pilot">Pilot (Uji Coba Tahap 2)</option>
+                      <option value="canary">Canary (Uji Coba Awal)</option>
+                    </select>
+                  </div>
+
+                  <div className="pt-4 flex justify-end space-x-2 border-t border-slate-800">
+                    <button 
+                      type="button" 
+                      onClick={() => setShowOutletModal(false)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg font-medium">
+                      Batal
+                    </button>
+                    <button 
+                      type="submit" 
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-semibold">
+                      Simpan Outlet
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Footer */}
+          <footer className="mt-auto border-t border-slate-800/80 py-4 text-center text-xs text-slate-500">
+            Quinos Cloud Update Manager &bull; VPS Production Engine &bull; Zero Downtime Resilient Deployments
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
