@@ -323,6 +323,20 @@ func (s *Server) handleAdminDeploymentAction(w http.ResponseWriter, r *http.Requ
 	}
 
 	switch req.Action {
+	case "notify_cashiers":
+		count, err := s.db.NotifyCashiersDeployment(req.DeploymentID)
+		if err != nil {
+			http.Error(w, "Failed to notify cashiers: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.db.AddAuditLog("", "", "ADMIN", "DEPLOYMENT_NOTIFY_CASHIERS", fmt.Sprintf("Sent PROMPT_UPDATE dialog to %d terminals for rollout %s", count, req.DeploymentID))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "ok",
+			"message": fmt.Sprintf("📢 Dialog notifikasi update dikirim ke %d terminal kasir. Kasir akan melihat popup dan dapat memilih 'Update Sekarang' atau 'Tunda 10 Menit'.", count),
+			"count":   count,
+		})
+
 	case "force_close":
 		count, err := s.db.ForceCloseDeploymentTerminals(req.DeploymentID)
 		if err != nil {

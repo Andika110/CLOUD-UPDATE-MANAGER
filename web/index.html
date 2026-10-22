@@ -101,7 +101,7 @@
       const [selectedPkgId, setSelectedPkgId] = useState('');
       const [targetGroup, setTargetGroup] = useState('canary');
       const [deployNotes, setDeployNotes] = useState('');
-      const [deployForceClose, setDeployForceClose] = useState(true);
+      const [deployForceClose, setDeployForceClose] = useState(false);
       const [isDeploying, setIsDeploying] = useState(false);
 
       // Outlet Form
@@ -199,17 +199,24 @@
       };
 
       const handleDeploymentAction = async (deploymentId, action) => {
-        const actionLabel = action === 'force_close' ? '⚡ Tutup POS & Lanjutkan Update' : '⏹ Batalkan Rollout';
-        if (!confirm(`Konfirmasi: Apakah Anda yakin ingin melakukan '${actionLabel}' pada deployment ${deploymentId}?`)) return;
+        const labels = {
+          notify_cashiers: '📢 Notifikasi Kasir (Dialog Ramah)',
+          force_close: '⚡ Force Close (Darurat)',
+          cancel: '⏹ Batalkan Rollout',
+        };
+        const actionLabel = labels[action] || action;
+
+        let confirmMsg = `Konfirmasi: Apakah Anda yakin ingin melakukan '${actionLabel}' pada deployment ${deploymentId}?`;
+        if (action === 'force_close') {
+          confirmMsg = `⚠️ PERHATIAN: Force Close akan LANGSUNG menutup aplikasi kasir TANPA peringatan ke kasir!\n\nGunakan HANYA jika toko sudah tutup atau kondisi darurat.\n\nLanjutkan?`;
+        }
+        if (!confirm(confirmMsg)) return;
 
         try {
           const res = await fetch('/api/v1/admin/deployments/action', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              deployment_id: deploymentId,
-              action: action
-            })
+            body: JSON.stringify({ deployment_id: deploymentId, action })
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.message || 'Action failed');
@@ -545,9 +552,18 @@
                           </td>
                           <td className="px-4 py-3">
                             {t.pos_running ? (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[11px]">
-                                Java Open {t.pos_pid ? `(PID: ${t.pos_pid})` : ''}
-                              </span>
+                              <div className="space-y-0.5">
+                                <span className="inline-flex items-center px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[11px]">
+                                  Java Open {t.pos_pid ? `(PID: ${t.pos_pid})` : ''}
+                                </span>
+                                <div className="text-[10px]">
+                                  {t.idle_seconds !== undefined && t.idle_seconds > 120 ? (
+                                    <span className="text-slate-400 font-mono">💤 Idle {Math.floor(t.idle_seconds / 60)}m lalu</span>
+                                  ) : (
+                                    <span className="text-emerald-400 font-medium">⚡ Kasir aktif</span>
+                                  )}
+                                </div>
+                              </div>
                             ) : (
                               <span className="text-slate-500 text-[11px]">Tutup / Idle</span>
                             )}
@@ -569,12 +585,20 @@
                               className="text-[11px] px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700">
                               🔍 Check
                             </button>
+                            {t.pos_running && (
+                              <button 
+                                onClick={() => handleTerminalAction(t.id, 'PROMPT_UPDATE')}
+                                title="Kirim dialog notifikasi pembaruan ke layar kasir"
+                                className="text-[11px] px-2 py-1 bg-sky-950/40 hover:bg-sky-900/60 text-sky-300 rounded border border-sky-800/40">
+                                📢 Notif
+                              </button>
+                            )}
                             {t.pos_running ? (
                               <button 
                                 onClick={() => handleTerminalAction(t.id, 'CLOSE_POS')}
-                                title="Tutup aplikasi POS di kasir"
+                                title="[DARURAT] Tutup paksa aplikasi POS di kasir tanpa konfirmasi"
                                 className="text-[11px] px-2 py-1 bg-amber-950/40 hover:bg-amber-900/60 text-amber-300 rounded border border-amber-800/40">
-                                ⏹ Tutup POS
+                                ⚡ Tutup POS
                               </button>
                             ) : (
                               <button 
@@ -712,10 +736,16 @@
                             {dep.status === 'Active' && (
                               <>
                                 <button
+                                  onClick={() => handleDeploymentAction(dep.id, 'notify_cashiers')}
+                                  title="Tampilkan dialog notifikasi ramah di layar kasir. Kasir bisa pilih Update Sekarang atau Tunda 10 Menit."
+                                  className="bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/30 text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center space-x-1 transition shadow-sm">
+                                  <span>📢 Notifikasi Kasir</span>
+                                </button>
+                                <button
                                   onClick={() => handleDeploymentAction(dep.id, 'force_close')}
-                                  title="Paksa tutup aplikasi Quinos POS di semua kasir yang sedang menunggu agar update langsung berjalan"
+                                  title="DARURAT: Paksa tutup POS langsung tanpa konfirmasi kasir. Gunakan saat toko sudah tutup."
                                   className="bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center space-x-1 transition shadow-sm">
-                                  <span>⚡ Force Close & Lanjut Update</span>
+                                  <span>⚡ Force Close</span>
                                 </button>
                                 <button
                                   onClick={() => handleDeploymentAction(dep.id, 'cancel')}
@@ -780,14 +810,22 @@
                                     )}
                                   </div>
 
-                                  <div className="flex items-center space-x-1">
+                                  <div className="flex items-center space-x-1 flex-shrink-0">
                                     {t.status === 'WaitingForPOS' && (
-                                      <button
-                                        onClick={() => handleTerminalAction(t.terminal_id, 'CLOSE_POS')}
-                                        title="Tutup Quinos POS pada terminal ini secara remote sekarang agar update berjalan"
-                                        className="bg-amber-600/30 hover:bg-amber-600/50 text-amber-200 border border-amber-500/40 text-[11px] font-semibold px-2.5 py-1 rounded shadow-sm flex items-center space-x-1 transition">
-                                        <span>⚡ Tutup POS</span>
-                                      </button>
+                                      <>
+                                        <button
+                                          onClick={() => handleTerminalAction(t.terminal_id, 'PROMPT_UPDATE')}
+                                          title="Tampilkan dialog notifikasi di layar kasir ini — kasir bisa pilih Update Sekarang atau Tunda"
+                                          className="bg-sky-600/30 hover:bg-sky-600/50 text-sky-200 border border-sky-500/40 text-[11px] font-semibold px-2 py-1 rounded shadow-sm flex items-center space-x-1 transition">
+                                          <span>📢 Notif</span>
+                                        </button>
+                                        <button
+                                          onClick={() => handleTerminalAction(t.terminal_id, 'CLOSE_POS')}
+                                          title="[DARURAT] Tutup POS paksa tanpa dialog — gunakan hanya saat toko sudah tutup"
+                                          className="bg-amber-600/30 hover:bg-amber-600/50 text-amber-200 border border-amber-500/40 text-[11px] font-semibold px-2 py-1 rounded shadow-sm flex items-center space-x-1 transition">
+                                          <span>⚡ Paksa</span>
+                                        </button>
+                                      </>
                                     )}
                                   </div>
                                 </div>
@@ -973,16 +1011,16 @@
                       id="deployForceCloseCheck"
                       checked={deployForceClose}
                       onChange={e => setDeployForceClose(e.target.checked)}
-                      className="mt-0.5 rounded border-slate-700 text-amber-500 focus:ring-0 cursor-pointer"
+                      className="mt-0.5 rounded border-slate-700 text-rose-500 focus:ring-0 cursor-pointer"
                     />
                     <label htmlFor="deployForceCloseCheck" className="text-slate-300 font-medium cursor-pointer">
-                      <span className="text-amber-300 font-bold block mb-0.5">⚡ Force Close POS & Auto-Restart (Rekomendasi)</span>
-                      Jika aplikasi kasir sedang dibuka, server akan otomatis meminta kasir menutup POS, lalu membuka kembali versi terbaru secara otomatis setelah update berhasil.
+                      <span className="text-rose-400 font-bold block mb-0.5">⚡ Force Close Otomatis (Hanya jika toko sudah tutup)</span>
+                      Tutup paksa aplikasi POS tanpa meminta konfirmasi kasir. <span className="text-slate-400 font-normal">Jika tidak dicentang (standar), agent akan mendownload di latar belakang dan memunculkan dialog persetujuan ke kasir setelah transaksi selesai.</span>
                     </label>
                   </div>
 
-                  <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-amber-300 text-[11px]">
-                    ℹ️ Agent di setiap terminal POS akan mendownload paket saat safe window, membuat cadangan backup lokal, dan melakukan rollback otomatis jika terjadi crash saat runtime.
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-3 text-emerald-300 text-[11px]">
+                    🛡️ <strong>Zero-Disruption:</strong> Paket JAR diunduh di latar belakang saat kasir tetap melayani pelanggan. Kasir memegang kendali penuh kapan harus menekan tombol update saat order selesai.
                   </div>
 
                   <div className="pt-4 flex justify-end space-x-2 border-t border-slate-800">

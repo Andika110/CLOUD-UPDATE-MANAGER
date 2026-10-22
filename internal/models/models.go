@@ -31,6 +31,7 @@ type Terminal struct {
 	AgentVersion      string     `json:"agent_version"`
 	POSRunning        bool       `json:"pos_running"`
 	POSPID            *int       `json:"pos_pid,omitempty"`
+	IdleSeconds       int        `json:"idle_seconds,omitempty"`
 	TargetPath        string     `json:"target_path"`
 	Status            string     `json:"status"`        // "Online", "Offline"
 	UpdateStatus      string     `json:"update_status"` // "IDLE", "DOWNLOADING", "VERIFYING", "INSTALLING", "SUCCESS", "FAILED", "ROLLED_BACK"
@@ -126,6 +127,7 @@ type HeartbeatRequest struct {
 	AgentVersion      string `json:"agent_version,omitempty"`
 	POSRunning        bool   `json:"pos_running"`
 	POSPID            *int   `json:"pos_pid,omitempty"`
+	IdleSeconds       int    `json:"idle_seconds,omitempty"`
 	TargetPath        string `json:"target_path"`
 	UpdateStatus      string `json:"update_status,omitempty"`
 }

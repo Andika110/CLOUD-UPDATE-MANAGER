@@ -148,6 +148,9 @@ func (d *DB) migrate() error {
 		}
 	}
 
+	// Schema migrations
+	_, _ = d.db.Exec("ALTER TABLE terminals ADD COLUMN idle_seconds INTEGER NOT NULL DEFAULT 0;")
+
 	return nil
 }
 
@@ -311,7 +314,7 @@ func (d *DB) ListTerminals(outletID string) ([]models.Terminal, error) {
 	query := `
 		SELECT t.id, t.outlet_id, o.outlet_code, o.name, t.terminal_code, t.hostname, t.ip_address,
 		       t.os_info, t.current_jar_version, t.agent_version, t.pos_running, t.pos_pid,
-		       t.target_path, t.status, t.update_status, t.pending_command, t.last_seen_at, t.created_at
+		       COALESCE(t.idle_seconds, 0), t.target_path, t.status, t.update_status, t.pending_command, t.last_seen_at, t.created_at
 		FROM terminals t
 		JOIN outlets o ON t.outlet_id = o.id
 	`
@@ -337,7 +340,7 @@ func (d *DB) ListTerminals(outletID string) ([]models.Terminal, error) {
 		err := rows.Scan(
 			&t.ID, &t.OutletID, &t.OutletCode, &t.OutletName, &t.TerminalCode, &t.Hostname, &t.IPAddress,
 			&t.OSInfo, &t.CurrentJARVersion, &t.AgentVersion, &t.POSRunning, &posPID,
-			&t.TargetPath, &t.Status, &t.UpdateStatus, &t.PendingCommand, &lastSeen, &t.CreatedAt,
+			&t.IdleSeconds, &t.TargetPath, &t.Status, &t.UpdateStatus, &t.PendingCommand, &lastSeen, &t.CreatedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -428,10 +431,10 @@ func (d *DB) UpsertHeartbeat(req models.HeartbeatRequest, apiKey string) (*model
 		// Auto-register new terminal
 		termID = uuid.New().String()
 		_, err = d.db.Exec(`INSERT INTO terminals 
-			(id, outlet_id, terminal_code, hostname, ip_address, os_info, current_jar_version, agent_version, pos_running, pos_pid, target_path, status, update_status, last_seen_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Online', ?, ?)`,
+			(id, outlet_id, terminal_code, hostname, ip_address, os_info, current_jar_version, agent_version, pos_running, pos_pid, idle_seconds, target_path, status, update_status, last_seen_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Online', ?, ?)`,
 			termID, outletID, req.TerminalCode, req.Hostname, req.IPAddress, req.OSInfo,
-			req.CurrentJARVersion, req.AgentVersion, req.POSRunning, req.POSPID, req.TargetPath,
+			req.CurrentJARVersion, req.AgentVersion, req.POSRunning, req.POSPID, req.IdleSeconds, req.TargetPath,
 			req.UpdateStatus, now)
 		if err != nil {
 			return nil, "", err
@@ -441,11 +444,11 @@ func (d *DB) UpsertHeartbeat(req models.HeartbeatRequest, apiKey string) (*model
 		// Update existing terminal
 		_, err = d.db.Exec(`UPDATE terminals SET
 			hostname = ?, ip_address = ?, os_info = ?, current_jar_version = ?, agent_version = ?,
-			pos_running = ?, pos_pid = ?, target_path = ?, status = 'Online', update_status = ?,
+			pos_running = ?, pos_pid = ?, idle_seconds = ?, target_path = ?, status = 'Online', update_status = ?,
 			last_seen_at = ?
 			WHERE id = ?`,
 			req.Hostname, req.IPAddress, req.OSInfo, req.CurrentJARVersion, req.AgentVersion,
-			req.POSRunning, req.POSPID, req.TargetPath, req.UpdateStatus, now, termID)
+			req.POSRunning, req.POSPID, req.IdleSeconds, req.TargetPath, req.UpdateStatus, now, termID)
 		if err != nil {
 			return nil, "", err
 		}
@@ -622,6 +625,35 @@ func (d *DB) CreateDeployment(pkgID, targetGroup, notes, createdBy string, force
 		CreatedBy:      createdBy,
 		CreatedAt:      time.Now(),
 	}, nil
+}
+
+// NotifyCashiersDeployment queues PROMPT_UPDATE (friendly dialog) to all active terminals in a deployment
+func (d *DB) NotifyCashiersDeployment(depID string) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.db.Query(`
+		SELECT DISTINCT terminal_id FROM deployment_tasks 
+		WHERE deployment_id = ? AND status NOT IN ('SUCCESS', 'FAILED', 'CANCELLED', 'ROLLED_BACK')
+	`, depID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	var termIDs []string
+	for rows.Next() {
+		var tid string
+		if err := rows.Scan(&tid); err == nil {
+			termIDs = append(termIDs, tid)
+		}
+	}
+
+	for _, tid := range termIDs {
+		_, _ = d.db.Exec(`UPDATE terminals SET pending_command = 'PROMPT_UPDATE' WHERE id = ? AND (pending_command = '' OR pending_command IS NULL)`, tid)
+	}
+
+	return len(termIDs), nil
 }
 
 // ForceCloseDeploymentTerminals queues CLOSE_POS command to all active terminals in a deployment
