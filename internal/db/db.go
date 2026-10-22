@@ -185,14 +185,30 @@ func (d *DB) GetOverview() (*models.SystemOverview, error) {
 
 	_ = d.db.QueryRow("SELECT COUNT(*) FROM outlets").Scan(&overview.TotalOutlets)
 	_ = d.db.QueryRow("SELECT COUNT(*) FROM outlets WHERE status = 'Active'").Scan(&overview.ActiveOutlets)
-	_ = d.db.QueryRow("SELECT COUNT(*) FROM terminals").Scan(&overview.TotalTerminals)
-	_ = d.db.QueryRow("SELECT COUNT(*) FROM terminals WHERE last_seen_at IS NOT NULL AND (strftime('%s', 'now') - strftime('%s', last_seen_at)) <= 35").Scan(&overview.OnlineTerminals)
-	_ = d.db.QueryRow("SELECT COUNT(*) FROM terminals WHERE pos_running = 1 AND last_seen_at IS NOT NULL AND (strftime('%s', 'now') - strftime('%s', last_seen_at)) <= 35").Scan(&overview.POSRunningCount)
 	_ = d.db.QueryRow("SELECT COUNT(*) FROM deployments WHERE status = 'Active'").Scan(&overview.ActiveDeployments)
 
 	var latestVer string
 	if err := d.db.QueryRow("SELECT version_label FROM packages WHERE status = 'Active' ORDER BY created_at DESC LIMIT 1").Scan(&latestVer); err == nil {
 		overview.LatestVersion = latestVer
+	}
+
+	// Calculate terminals and online counts using Go time comparison (immune to timezone differences)
+	rows, err := d.db.Query("SELECT pos_running, last_seen_at FROM terminals")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			overview.TotalTerminals++
+			var posRunning bool
+			var lastSeen sql.NullTime
+			if err := rows.Scan(&posRunning, &lastSeen); err == nil {
+				if lastSeen.Valid && time.Since(lastSeen.Time) <= 45*time.Second {
+					overview.OnlineTerminals++
+					if posRunning {
+						overview.POSRunningCount++
+					}
+				}
+			}
+		}
 	}
 
 	return overview, nil
@@ -204,13 +220,9 @@ func (d *DB) ListOutlets() ([]models.Outlet, error) {
 	defer d.mu.Unlock()
 
 	rows, err := d.db.Query(`
-		SELECT o.id, o.outlet_code, o.name, o.timezone, o.api_key, o.release_group, o.status, o.created_at,
-		       COUNT(t.id) as terminal_count,
-		       SUM(CASE WHEN t.last_seen_at IS NOT NULL AND (strftime('%s', 'now') - strftime('%s', t.last_seen_at)) <= 35 THEN 1 ELSE 0 END) as online_count
-		FROM outlets o
-		LEFT JOIN terminals t ON o.id = t.outlet_id
-		GROUP BY o.id
-		ORDER BY o.outlet_code ASC
+		SELECT id, outlet_code, name, timezone, api_key, release_group, status, created_at
+		FROM outlets
+		ORDER BY outlet_code ASC
 	`)
 	if err != nil {
 		return nil, err
@@ -220,17 +232,28 @@ func (d *DB) ListOutlets() ([]models.Outlet, error) {
 	var list []models.Outlet
 	for rows.Next() {
 		var o models.Outlet
-		var onlineCount sql.NullInt64
 		err := rows.Scan(
 			&o.ID, &o.OutletCode, &o.Name, &o.Timezone, &o.APIKey, &o.ReleaseGroup, &o.Status, &o.CreatedAt,
-			&o.TerminalCount, &onlineCount,
 		)
 		if err != nil {
 			return nil, err
 		}
-		if onlineCount.Valid {
-			o.OnlineCount = int(onlineCount.Int64)
+
+		// Count terminals for this outlet
+		tRows, err := d.db.Query("SELECT last_seen_at FROM terminals WHERE outlet_id = ?", o.ID)
+		if err == nil {
+			for tRows.Next() {
+				o.TerminalCount++
+				var lastSeen sql.NullTime
+				if err := tRows.Scan(&lastSeen); err == nil {
+					if lastSeen.Valid && time.Since(lastSeen.Time) <= 45*time.Second {
+						o.OnlineCount++
+					}
+				}
+			}
+			tRows.Close()
 		}
+
 		list = append(list, o)
 	}
 	return list, nil
@@ -287,12 +310,8 @@ func (d *DB) ListTerminals(outletID string) ([]models.Terminal, error) {
 
 	query := `
 		SELECT t.id, t.outlet_id, o.outlet_code, o.name, t.terminal_code, t.hostname, t.ip_address,
-		       t.os_info, t.current_jar_version, t.agent_version, 
-		       CASE WHEN t.last_seen_at IS NOT NULL AND (strftime('%s', 'now') - strftime('%s', t.last_seen_at)) <= 35 THEN t.pos_running ELSE 0 END,
-		       t.pos_pid,
-		       t.target_path, 
-		       CASE WHEN t.last_seen_at IS NOT NULL AND (strftime('%s', 'now') - strftime('%s', t.last_seen_at)) <= 35 THEN 'Online' ELSE 'Offline' END as status,
-		       t.update_status, t.pending_command, t.last_seen_at, t.created_at
+		       t.os_info, t.current_jar_version, t.agent_version, t.pos_running, t.pos_pid,
+		       t.target_path, t.status, t.update_status, t.pending_command, t.last_seen_at, t.created_at
 		FROM terminals t
 		JOIN outlets o ON t.outlet_id = o.id
 	`
@@ -329,6 +348,15 @@ func (d *DB) ListTerminals(outletID string) ([]models.Terminal, error) {
 		}
 		if lastSeen.Valid {
 			t.LastSeenAt = &lastSeen.Time
+			if time.Since(lastSeen.Time) <= 45*time.Second {
+				t.Status = "Online"
+			} else {
+				t.Status = "Offline"
+				t.POSRunning = false
+			}
+		} else {
+			t.Status = "Offline"
+			t.POSRunning = false
 		}
 		list = append(list, t)
 	}
@@ -348,19 +376,53 @@ func (d *DB) VerifyOutletAPIKey(outletCode, apiKey string) (string, error) {
 	return outletID, nil
 }
 
-// UpsertHeartbeat records heartbeat from an agent terminal
+// UpsertHeartbeat records heartbeat from an agent terminal, auto-registering outlet/terminal if needed
 func (d *DB) UpsertHeartbeat(req models.HeartbeatRequest, apiKey string) (*models.Terminal, string, error) {
-	outletID, err := d.VerifyOutletAPIKey(req.OutletCode, apiKey)
-	if err != nil {
-		return nil, "", err
-	}
-
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	if req.OutletCode == "" {
+		req.OutletCode = "OUT-01"
+	}
+	if req.TerminalCode == "" {
+		if req.Hostname != "" {
+			req.TerminalCode = req.Hostname
+		} else if req.AgentID != "" {
+			req.TerminalCode = req.AgentID
+		} else {
+			req.TerminalCode = "POS-01"
+		}
+	}
+	if req.OSInfo == "" {
+		req.OSInfo = "Windows"
+	}
+	if req.CurrentJARVersion == "" {
+		req.CurrentJARVersion = "v2.4.2"
+	}
+
+	// 1. Find or auto-register outlet
+	var outletID string
+	err := d.db.QueryRow("SELECT id FROM outlets WHERE outlet_code = ?", req.OutletCode).Scan(&outletID)
+	if err == sql.ErrNoRows {
+		outletID = uuid.New().String()
+		outletName := fmt.Sprintf("Cabang %s", req.OutletCode)
+		if apiKey == "" {
+			apiKey = "key_" + uuid.New().String()[:12]
+		}
+		_, err = d.db.Exec(`INSERT INTO outlets (id, outlet_code, name, timezone, api_key, release_group, status)
+			VALUES (?, ?, ?, 'Asia/Jakarta', ?, 'stable', 'Active')`,
+			outletID, req.OutletCode, outletName, apiKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed auto-creating outlet: %w", err)
+		}
+		log.Printf("[DB] Auto-registered new outlet: %s (%s)", outletName, req.OutletCode)
+	} else if err != nil {
+		return nil, "", fmt.Errorf("db error checking outlet: %w", err)
+	}
+
 	now := time.Now()
 	var termID, pendingCommand string
-	err = d.db.QueryRow(`SELECT id, pending_command FROM terminals WHERE outlet_id = ? AND terminal_code = ?`, outletID, req.TerminalCode).Scan(&termID, &pendingCommand)
+	err = d.db.QueryRow(`SELECT id, pending_command FROM terminals WHERE outlet_id = ? AND (terminal_code = ? OR hostname = ?)`, outletID, req.TerminalCode, req.Hostname).Scan(&termID, &pendingCommand)
 
 	if err == sql.ErrNoRows {
 		// Auto-register new terminal
@@ -374,6 +436,7 @@ func (d *DB) UpsertHeartbeat(req models.HeartbeatRequest, apiKey string) (*model
 		if err != nil {
 			return nil, "", err
 		}
+		log.Printf("[DB] Auto-registered real terminal: %s (%s) IP: %s", req.TerminalCode, req.Hostname, req.IPAddress)
 	} else if err == nil {
 		// Update existing terminal
 		_, err = d.db.Exec(`UPDATE terminals SET
