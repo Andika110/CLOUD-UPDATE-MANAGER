@@ -55,7 +55,7 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(overview)
 }
 
-// handleAdminOutlets handles listing and creating store outlets
+// handleAdminOutlets handles listing, creating, and deleting store outlets
 func (s *Server) handleAdminOutlets(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -99,27 +99,56 @@ func (s *Server) handleAdminOutlets(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(outlet)
 
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "Missing outlet id", http.StatusBadRequest)
+			return
+		}
+		if err := s.db.DeleteOutlet(id); err != nil {
+			http.Error(w, "Failed to delete outlet: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.db.AddAuditLog("", "", "ADMIN", "OUTLET_DELETED", fmt.Sprintf("Deleted outlet ID: %s", id))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+
 	default:
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-// handleAdminTerminals returns all terminals, optionally filtered by outlet_id
+// handleAdminTerminals returns all terminals, optionally filtered by outlet_id, or deletes a terminal
 func (s *Server) handleAdminTerminals(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		outletID := r.URL.Query().Get("outlet_id")
+		terminals, err := s.db.ListTerminals(outletID)
+		if err != nil {
+			http.Error(w, "Failed to list terminals: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(terminals)
+
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "Missing terminal id", http.StatusBadRequest)
+			return
+		}
+		if err := s.db.DeleteTerminal(id); err != nil {
+			http.Error(w, "Failed to delete terminal: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.db.AddAuditLog("", "", "ADMIN", "TERMINAL_DELETED", fmt.Sprintf("Deleted terminal ID: %s", id))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+
+	default:
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
 	}
-
-	outletID := r.URL.Query().Get("outlet_id")
-	terminals, err := s.db.ListTerminals(outletID)
-	if err != nil {
-		http.Error(w, "Failed to list terminals: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(terminals)
 }
 
 // handleAdminPackages returns all uploaded JAR releases

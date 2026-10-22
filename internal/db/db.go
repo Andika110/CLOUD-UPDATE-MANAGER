@@ -160,58 +160,15 @@ func (d *DB) seedDefaults() error {
 		return nil
 	}
 
-	log.Printf("[DB] Seeding default outlets and initial setup data...")
-
-	// Seed 3 Outlets
-	outlets := []struct {
-		code, name, group, apiKey string
-	}{
-		{"OUT-JKT-01", "Quinos Senopati Flagship", "canary", "key_senopati_secret123"},
-		{"OUT-SBY-01", "Quinos Tunjungan Surabaya", "pilot", "key_tunjungan_secret456"},
-		{"OUT-DPS-01", "Quinos Seminyak Bali", "stable", "key_seminyak_secret789"},
-	}
-
-	for _, o := range outlets {
-		outID := uuid.New().String()
-		_, err := d.db.Exec(`INSERT INTO outlets (id, outlet_code, name, timezone, api_key, release_group, status)
-			VALUES (?, ?, ?, 'Asia/Jakarta', ?, ?, 'Active')`,
-			outID, o.code, o.name, o.apiKey, o.group)
-		if err != nil {
-			return err
-		}
-
-		// Seed 2-3 Terminals for each outlet
-		termCount := 3
-		if o.code == "OUT-DPS-01" {
-			termCount = 2
-		}
-		for i := 1; i <= termCount; i++ {
-			termID := uuid.New().String()
-			termCode := fmt.Sprintf("POS-%02d", i)
-			hostname := fmt.Sprintf("%s-%s", o.code, termCode)
-			ip := fmt.Sprintf("192.168.1.%d", 10+i)
-			_, err = d.db.Exec(`INSERT INTO terminals 
-				(id, outlet_id, terminal_code, hostname, ip_address, os_info, current_jar_version, agent_version, pos_running, target_path, status, update_status)
-				VALUES (?, ?, ?, ?, ?, 'Windows 10 Pro 64-bit', 'v2.4.2', 'v1.0.0', 1, 'C:\\QuinosPOS\\app\\quinos.jar', 'Online', 'IDLE')`,
-				termID, outID, termCode, hostname, ip)
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	// Seed Baseline Package
-	pkgID := uuid.New().String()
-	_, err := d.db.Exec(`INSERT INTO packages 
-		(id, version_label, file_name, size_bytes, sha256, changelog, release_channel, is_mandatory, storage_path, uploaded_by, status)
-		VALUES (?, 'v2.4.2-STABLE', 'quinos.jar', 48512340, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 
-		'Versi baseline stabil terpasang di semua kasir', 'stable', 0, 'data/packages/quinos-v2.4.2.jar', 'admin', 'Active')`,
-		pkgID)
+	log.Printf("[DB] Initializing default outlet...")
+	outID := uuid.New().String()
+	_, err := d.db.Exec(`INSERT INTO outlets (id, outlet_code, name, timezone, api_key, release_group, status)
+		VALUES (?, 'OUT-JKT-01', 'Quinos Main Store', 'Asia/Jakarta', 'key_senopati_secret123', 'stable', 'Active')`, outID)
 	if err != nil {
 		return err
 	}
 
-	d.AddAuditLog("", "", "SYSTEM", "DATABASE_INITIALIZED", "Cloud Update Manager database seeded with default outlets and terminals")
+	d.AddAuditLog("", "", "SYSTEM", "DATABASE_INITIALIZED", "Cloud Update Manager initialized with clean production database")
 	return nil
 }
 
@@ -229,8 +186,8 @@ func (d *DB) GetOverview() (*models.SystemOverview, error) {
 	_ = d.db.QueryRow("SELECT COUNT(*) FROM outlets").Scan(&overview.TotalOutlets)
 	_ = d.db.QueryRow("SELECT COUNT(*) FROM outlets WHERE status = 'Active'").Scan(&overview.ActiveOutlets)
 	_ = d.db.QueryRow("SELECT COUNT(*) FROM terminals").Scan(&overview.TotalTerminals)
-	_ = d.db.QueryRow("SELECT COUNT(*) FROM terminals WHERE status = 'Online'").Scan(&overview.OnlineTerminals)
-	_ = d.db.QueryRow("SELECT COUNT(*) FROM terminals WHERE pos_running = 1").Scan(&overview.POSRunningCount)
+	_ = d.db.QueryRow("SELECT COUNT(*) FROM terminals WHERE last_seen_at IS NOT NULL AND (strftime('%s', 'now') - strftime('%s', last_seen_at)) <= 35").Scan(&overview.OnlineTerminals)
+	_ = d.db.QueryRow("SELECT COUNT(*) FROM terminals WHERE pos_running = 1 AND last_seen_at IS NOT NULL AND (strftime('%s', 'now') - strftime('%s', last_seen_at)) <= 35").Scan(&overview.POSRunningCount)
 	_ = d.db.QueryRow("SELECT COUNT(*) FROM deployments WHERE status = 'Active'").Scan(&overview.ActiveDeployments)
 
 	var latestVer string
@@ -249,7 +206,7 @@ func (d *DB) ListOutlets() ([]models.Outlet, error) {
 	rows, err := d.db.Query(`
 		SELECT o.id, o.outlet_code, o.name, o.timezone, o.api_key, o.release_group, o.status, o.created_at,
 		       COUNT(t.id) as terminal_count,
-		       SUM(CASE WHEN t.status = 'Online' THEN 1 ELSE 0 END) as online_count
+		       SUM(CASE WHEN t.last_seen_at IS NOT NULL AND (strftime('%s', 'now') - strftime('%s', t.last_seen_at)) <= 35 THEN 1 ELSE 0 END) as online_count
 		FROM outlets o
 		LEFT JOIN terminals t ON o.id = t.outlet_id
 		GROUP BY o.id
@@ -306,6 +263,23 @@ func (d *DB) CreateOutlet(code, name, group, apiKey string) (*models.Outlet, err
 	}, nil
 }
 
+// DeleteOutlet removes an outlet and its associated terminals
+func (d *DB) DeleteOutlet(id string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, _ = d.db.Exec("DELETE FROM terminals WHERE outlet_id = ?", id)
+	_, err := d.db.Exec("DELETE FROM outlets WHERE id = ?", id)
+	return err
+}
+
+// DeleteTerminal removes a specific terminal
+func (d *DB) DeleteTerminal(id string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.Exec("DELETE FROM terminals WHERE id = ?", id)
+	return err
+}
+
 // ListTerminals returns terminals, optionally filtered by outlet_id
 func (d *DB) ListTerminals(outletID string) ([]models.Terminal, error) {
 	d.mu.Lock()
@@ -313,8 +287,12 @@ func (d *DB) ListTerminals(outletID string) ([]models.Terminal, error) {
 
 	query := `
 		SELECT t.id, t.outlet_id, o.outlet_code, o.name, t.terminal_code, t.hostname, t.ip_address,
-		       t.os_info, t.current_jar_version, t.agent_version, t.pos_running, t.pos_pid,
-		       t.target_path, t.status, t.update_status, t.pending_command, t.last_seen_at, t.created_at
+		       t.os_info, t.current_jar_version, t.agent_version, 
+		       CASE WHEN t.last_seen_at IS NOT NULL AND (strftime('%s', 'now') - strftime('%s', t.last_seen_at)) <= 35 THEN t.pos_running ELSE 0 END,
+		       t.pos_pid,
+		       t.target_path, 
+		       CASE WHEN t.last_seen_at IS NOT NULL AND (strftime('%s', 'now') - strftime('%s', t.last_seen_at)) <= 35 THEN 'Online' ELSE 'Offline' END as status,
+		       t.update_status, t.pending_command, t.last_seen_at, t.created_at
 		FROM terminals t
 		JOIN outlets o ON t.outlet_id = o.id
 	`

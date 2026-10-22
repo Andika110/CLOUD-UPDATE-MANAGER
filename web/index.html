@@ -235,6 +235,45 @@
         }
       };
 
+      const handleDeleteTerminal = async (terminalId, code) => {
+        if (!confirm(`Hapus terminal kasir '${code}' dari daftar sistem?`)) return;
+        try {
+          const res = await fetch(`/api/v1/admin/terminals?id=${terminalId}`, {
+            method: 'DELETE'
+          });
+          if (!res.ok) throw new Error(await res.text());
+          fetchData();
+        } catch (err) {
+          alert("Gagal menghapus terminal: " + err.message);
+        }
+      };
+
+      const handleDeleteOutlet = async (outletId, name) => {
+        if (!confirm(`Hapus outlet cabang '${name}' beserta seluruh terminal kasir di dalamnya?`)) return;
+        try {
+          const res = await fetch(`/api/v1/admin/outlets?id=${outletId}`, {
+            method: 'DELETE'
+          });
+          if (!res.ok) throw new Error(await res.text());
+          fetchData();
+        } catch (err) {
+          alert("Gagal menghapus outlet: " + err.message);
+        }
+      };
+
+      const formatRelativeTime = (isoString) => {
+        if (!isoString) return 'Belum terhubung';
+        const d = new Date(isoString);
+        const diffSec = Math.floor((new Date() - d) / 1000);
+        if (diffSec < 10) return 'Baru saja';
+        if (diffSec < 60) return `${diffSec} detik lalu`;
+        const diffMin = Math.floor(diffSec / 60);
+        if (diffMin < 60) return `${diffMin} mnt lalu`;
+        const diffHour = Math.floor(diffMin / 60);
+        if (diffHour < 24) return `${diffHour} jam lalu`;
+        return d.toLocaleDateString();
+      };
+
       return (
         <div className="flex flex-col min-h-screen">
           {/* Top Navbar */}
@@ -410,16 +449,31 @@
                         </div>
 
                         <div className="mt-3 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/60 flex items-center justify-between text-xs">
-                          <span className="text-slate-500 font-mono text-[11px] truncate max-w-[200px]">Key: {outlet.api_key}</span>
-                          <button 
-                            onClick={() => { navigator.clipboard.writeText(outlet.api_key); alert("API Key disalin!"); }}
-                            className="text-indigo-400 hover:text-indigo-300 text-[11px] font-medium">
-                            Copy Key
-                          </button>
+                          <span className="text-slate-500 font-mono text-[11px] truncate max-w-[160px]">Key: {outlet.api_key}</span>
+                          <div className="flex items-center space-x-2">
+                            <button 
+                              onClick={() => { navigator.clipboard.writeText(outlet.api_key); alert("API Key disalin!"); }}
+                              className="text-indigo-400 hover:text-indigo-300 text-[11px] font-medium">
+                              Copy Key
+                            </button>
+                            <button 
+                              onClick={() => handleDeleteOutlet(outlet.id, outlet.name)}
+                              className="text-rose-400/80 hover:text-rose-300 text-[11px] font-medium">
+                              Hapus
+                            </button>
+                          </div>
                         </div>
                       </div>
                   ))}
                 </div>
+
+                {outlets.length === 0 && (
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 text-center text-slate-400">
+                    <div className="text-3xl mb-2">🏢</div>
+                    <div className="font-semibold text-white">Belum Ada Outlet Terdaftar</div>
+                    <p className="text-xs text-slate-500 mt-1">Klik tombol "+ Tambah Outlet Cabang" di atas untuk mendaftarkan cabang baru.</p>
+                  </div>
+                )}
               </div>
             )}
 
@@ -433,6 +487,7 @@
                         <th className="px-4 py-3.5">Terminal / Host</th>
                         <th className="px-4 py-3.5">Outlet Cabang</th>
                         <th className="px-4 py-3.5">Status Koneksi</th>
+                        <th className="px-4 py-3.5">Terakhir Aktif</th>
                         <th className="px-4 py-3.5">Versi JAR Aktif</th>
                         <th className="px-4 py-3.5">Aplikasi POS Java</th>
                         <th className="px-4 py-3.5">Update Status</th>
@@ -458,6 +513,9 @@
                               {t.status}
                             </span>
                           </td>
+                          <td className="px-4 py-3 font-mono text-[11px] text-slate-400">
+                            {formatRelativeTime(t.last_seen_at)}
+                          </td>
                           <td className="px-4 py-3 font-mono font-medium text-indigo-400">
                             {t.current_jar_version}
                           </td>
@@ -477,7 +535,7 @@
                               t.update_status === 'DOWNLOADING' || t.update_status === 'INSTALLING' ? 'bg-sky-500/10 text-sky-400 animate-pulse' :
                               'text-slate-400'
                             }`}>
-                              {t.update_status}
+                              {t.update_status || 'IDLE'}
                             </span>
                           </td>
                           <td className="px-4 py-3 text-right space-x-1">
@@ -491,11 +549,27 @@
                               className="text-[11px] px-2 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded border border-slate-700">
                               Restart POS
                             </button>
+                            <button 
+                              onClick={() => handleDeleteTerminal(t.id, t.terminal_code)}
+                              className="text-[11px] px-2 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 rounded border border-rose-800/40">
+                              Hapus
+                            </button>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+
+                  {terminals.length === 0 && (
+                    <div className="p-12 text-center">
+                      <div className="text-4xl mb-3">🖥️</div>
+                      <h4 className="font-bold text-white text-base">Belum Ada Terminal Kasir yang Terhubung</h4>
+                      <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                        Jalankan <strong>JALANKAN_CLIENT.bat</strong> di folder <code>CLIENT_APP</code> pada PC Kasir Anda.
+                        Terminal kasir yang online akan otomatis muncul di sini secara real-time.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
