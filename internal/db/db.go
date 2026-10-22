@@ -549,7 +549,7 @@ func (d *DB) CreatePackage(p models.Package) error {
 }
 
 // CreateDeployment triggers a rollout to targeted terminals
-func (d *DB) CreateDeployment(pkgID, targetGroup, notes, createdBy string) (*models.Deployment, error) {
+func (d *DB) CreateDeployment(pkgID, targetGroup, notes, createdBy string, forceClose bool) (*models.Deployment, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -606,6 +606,9 @@ func (d *DB) CreateDeployment(pkgID, targetGroup, notes, createdBy string) (*mod
 		taskID := uuid.New().String()
 		_, _ = d.db.Exec(`INSERT INTO deployment_tasks (id, deployment_id, terminal_id, package_id, target_version, status, progress)
 			VALUES (?, ?, ?, ?, ?, 'PENDING', 0)`, taskID, depID, t.termID, pkgID, pkgVersion)
+		if forceClose {
+			_, _ = d.db.Exec(`UPDATE terminals SET pending_command = 'CLOSE_POS' WHERE id = ?`, t.termID)
+		}
 	}
 
 	return &models.Deployment{
@@ -621,7 +624,49 @@ func (d *DB) CreateDeployment(pkgID, targetGroup, notes, createdBy string) (*mod
 	}, nil
 }
 
-// ListDeployments returns all deployments with task counts
+// ForceCloseDeploymentTerminals queues CLOSE_POS command to all active terminals in a deployment
+func (d *DB) ForceCloseDeploymentTerminals(depID string) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.db.Query(`
+		SELECT DISTINCT terminal_id FROM deployment_tasks 
+		WHERE deployment_id = ? AND status NOT IN ('SUCCESS', 'FAILED', 'CANCELLED', 'ROLLED_BACK')
+	`, depID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	var termIDs []string
+	for rows.Next() {
+		var tid string
+		if err := rows.Scan(&tid); err == nil {
+			termIDs = append(termIDs, tid)
+		}
+	}
+
+	for _, tid := range termIDs {
+		_, _ = d.db.Exec(`UPDATE terminals SET pending_command = 'CLOSE_POS' WHERE id = ?`, tid)
+	}
+
+	return len(termIDs), nil
+}
+
+// CancelDeployment cancels an active deployment and sets remaining tasks to CANCELLED
+func (d *DB) CancelDeployment(depID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.db.Exec(`UPDATE deployments SET status = 'Cancelled' WHERE id = ?`, depID)
+	if err != nil {
+		return err
+	}
+	_, _ = d.db.Exec(`UPDATE deployment_tasks SET status = 'CANCELLED' WHERE deployment_id = ? AND status NOT IN ('SUCCESS', 'FAILED')`, depID)
+	return nil
+}
+
+// ListDeployments returns all deployments with task counts and individual terminal tasks
 func (d *DB) ListDeployments() ([]models.Deployment, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -650,6 +695,34 @@ func (d *DB) ListDeployments() ([]models.Deployment, error) {
 		}
 		list = append(list, dep)
 	}
+
+	// Fetch tasks for each deployment
+	for i := range list {
+		taskRows, err := d.db.Query(`
+			SELECT dt.id, dt.deployment_id, dt.terminal_id, COALESCE(t.terminal_code, ''), COALESCE(o.outlet_code, ''), 
+			       dt.package_id, dt.target_version, dt.status, dt.progress, COALESCE(dt.error_message, ''), 
+			       dt.started_at, dt.completed_at
+			FROM deployment_tasks dt
+			LEFT JOIN terminals t ON dt.terminal_id = t.id
+			LEFT JOIN outlets o ON t.outlet_id = o.id
+			WHERE dt.deployment_id = ?
+			ORDER BY dt.started_at ASC, dt.id ASC
+		`, list[i].ID)
+		if err == nil {
+			for taskRows.Next() {
+				var t models.DeploymentTask
+				if err := taskRows.Scan(
+					&t.ID, &t.DeploymentID, &t.TerminalID, &t.TerminalCode, &t.OutletCode,
+					&t.PackageID, &t.TargetVersion, &t.Status, &t.Progress, &t.ErrorMessage,
+					&t.StartedAt, &t.CompletedAt,
+				); err == nil {
+					list[i].Tasks = append(list[i].Tasks, t)
+				}
+			}
+			taskRows.Close()
+		}
+	}
+
 	return list, nil
 }
 

@@ -66,6 +66,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/admin/packages", s.handleAdminPackages)
 	s.mux.HandleFunc("/api/v1/admin/packages/upload", s.handleAdminPackageUpload)
 	s.mux.HandleFunc("/api/v1/admin/deployments", s.handleAdminDeployments)
+	s.mux.HandleFunc("/api/v1/admin/deployments/action", s.handleAdminDeploymentAction)
 	s.mux.HandleFunc("/api/v1/admin/terminals/command", s.handleAdminTerminalCommand)
 	s.mux.HandleFunc("/api/v1/admin/logs", s.handleAdminLogs)
 }

@@ -269,6 +269,7 @@ func (s *Server) handleAdminDeployments(w http.ResponseWriter, r *http.Request) 
 			PackageID   string `json:"package_id"`
 			TargetGroup string `json:"target_group"` // "canary", "pilot", "all", or "outlet:OUT-XXX"
 			Notes       string `json:"notes"`
+			ForceClose  bool   `json:"force_close"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
@@ -283,13 +284,13 @@ func (s *Server) handleAdminDeployments(w http.ResponseWriter, r *http.Request) 
 			req.TargetGroup = "canary"
 		}
 
-		dep, err := s.db.CreateDeployment(req.PackageID, req.TargetGroup, req.Notes, "admin")
+		dep, err := s.db.CreateDeployment(req.PackageID, req.TargetGroup, req.Notes, "admin", req.ForceClose)
 		if err != nil {
 			http.Error(w, "Failed to create deployment: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		s.db.AddAuditLog("", "", "ADMIN", "DEPLOYMENT_LAUNCHED", fmt.Sprintf("Started rollout %s to target group '%s' (%d terminals)", dep.ID, req.TargetGroup, dep.TotalTasks))
+		s.db.AddAuditLog("", "", "ADMIN", "DEPLOYMENT_LAUNCHED", fmt.Sprintf("Started rollout %s to target group '%s' (%d terminals, force_close=%v)", dep.ID, req.TargetGroup, dep.TotalTasks, req.ForceClose))
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -297,6 +298,59 @@ func (s *Server) handleAdminDeployments(w http.ResponseWriter, r *http.Request) 
 
 	default:
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAdminDeploymentAction handles actions on a deployment (force_close, cancel)
+func (s *Server) handleAdminDeploymentAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		DeploymentID string `json:"deployment_id"`
+		Action       string `json:"action"` // "force_close", "cancel"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.DeploymentID == "" || req.Action == "" {
+		http.Error(w, "Missing deployment_id or action", http.StatusBadRequest)
+		return
+	}
+
+	switch req.Action {
+	case "force_close":
+		count, err := s.db.ForceCloseDeploymentTerminals(req.DeploymentID)
+		if err != nil {
+			http.Error(w, "Failed to force close terminals: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.db.AddAuditLog("", "", "ADMIN", "DEPLOYMENT_FORCE_CLOSE", fmt.Sprintf("Triggered force close on %d terminals for rollout %s", count, req.DeploymentID))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "ok",
+			"message": fmt.Sprintf("Perintah force close dikirim ke %d terminal kasir", count),
+			"count":   count,
+		})
+
+	case "cancel":
+		if err := s.db.CancelDeployment(req.DeploymentID); err != nil {
+			http.Error(w, "Failed to cancel deployment: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.db.AddAuditLog("", "", "ADMIN", "DEPLOYMENT_CANCELLED", fmt.Sprintf("Cancelled rollout %s", req.DeploymentID))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":  "ok",
+			"message": "Deployment berhasil dibatalkan",
+		})
+
+	default:
+		http.Error(w, "Unknown action: "+req.Action, http.StatusBadRequest)
 	}
 }
 

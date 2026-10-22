@@ -101,6 +101,7 @@
       const [selectedPkgId, setSelectedPkgId] = useState('');
       const [targetGroup, setTargetGroup] = useState('canary');
       const [deployNotes, setDeployNotes] = useState('');
+      const [deployForceClose, setDeployForceClose] = useState(true);
       const [isDeploying, setIsDeploying] = useState(false);
 
       // Outlet Form
@@ -182,7 +183,8 @@
             body: JSON.stringify({
               package_id: selectedPkgId,
               target_group: targetGroup,
-              notes: deployNotes
+              notes: deployNotes,
+              force_close: deployForceClose
             })
           });
           if (!res.ok) throw new Error(await res.text());
@@ -193,6 +195,28 @@
           alert("Gagal deploy: " + err.message);
         } finally {
           setIsDeploying(false);
+        }
+      };
+
+      const handleDeploymentAction = async (deploymentId, action) => {
+        const actionLabel = action === 'force_close' ? '⚡ Tutup POS & Lanjutkan Update' : '⏹ Batalkan Rollout';
+        if (!confirm(`Konfirmasi: Apakah Anda yakin ingin melakukan '${actionLabel}' pada deployment ${deploymentId}?`)) return;
+
+        try {
+          const res = await fetch('/api/v1/admin/deployments/action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              deployment_id: deploymentId,
+              action: action
+            })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.message || 'Action failed');
+          alert(data.message || `Aksi berhasil dieksekusi!`);
+          fetchData();
+        } catch (err) {
+          alert("Gagal mengeksekusi aksi: " + err.message);
         }
       };
 
@@ -684,13 +708,32 @@
                             <p className="text-xs text-slate-400 mt-1">{dep.notes || 'No description notes provided'}</p>
                           </div>
 
-                          <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
-                            dep.status === 'Completed' ? 'bg-emerald-500/10 text-emerald-400' :
-                            dep.status === 'Active' ? 'bg-indigo-500/10 text-indigo-400 animate-pulse' :
-                            'bg-slate-800 text-slate-400'
-                          }`}>
-                            {dep.status}
-                          </span>
+                          <div className="flex items-center space-x-2">
+                            {dep.status === 'Active' && (
+                              <>
+                                <button
+                                  onClick={() => handleDeploymentAction(dep.id, 'force_close')}
+                                  title="Paksa tutup aplikasi Quinos POS di semua kasir yang sedang menunggu agar update langsung berjalan"
+                                  className="bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center space-x-1 transition shadow-sm">
+                                  <span>⚡ Force Close & Lanjut Update</span>
+                                </button>
+                                <button
+                                  onClick={() => handleDeploymentAction(dep.id, 'cancel')}
+                                  title="Batalkan peluncuran update ini"
+                                  className="bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center space-x-1 transition shadow-sm">
+                                  <span>⏹ Batalkan</span>
+                                </button>
+                              </>
+                            )}
+                            <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                              dep.status === 'Completed' ? 'bg-emerald-500/10 text-emerald-400' :
+                              dep.status === 'Active' ? 'bg-indigo-500/10 text-indigo-400 animate-pulse' :
+                              dep.status === 'Cancelled' ? 'bg-rose-500/10 text-rose-400' :
+                              'bg-slate-800 text-slate-400'
+                            }`}>
+                              {dep.status}
+                            </span>
+                          </div>
                         </div>
 
                         {/* Progress Bar */}
@@ -703,6 +746,55 @@
                             <div className="bg-gradient-to-r from-indigo-500 to-emerald-500 h-2 rounded-full transition-all duration-500" style={{ width: `${percent}%` }}></div>
                           </div>
                         </div>
+
+                        {/* Terminal Task Breakdown */}
+                        {dep.tasks && dep.tasks.length > 0 && (
+                          <div className="mt-4 pt-3 border-t border-slate-800/80">
+                            <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-between">
+                              <span>Detail Terminal Kasir ({dep.tasks.length})</span>
+                              <span className="text-[10px] text-slate-500">Real-time status</span>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              {dep.tasks.map(t => (
+                                <div key={t.id} className="bg-slate-950/70 border border-slate-800 rounded-lg p-3 flex items-center justify-between">
+                                  <div className="space-y-1">
+                                    <div className="flex items-center space-x-2">
+                                      <span className="font-bold text-white text-xs">{t.terminal_code || t.terminal_id}</span>
+                                      <span className="text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.2 rounded">{t.outlet_code}</span>
+                                    </div>
+                                    <div className="text-[11px] flex items-center space-x-1.5">
+                                      <span className="text-slate-400">Status:</span>
+                                      <span className={`font-semibold ${
+                                        t.status === 'SUCCESS' ? 'text-emerald-400' :
+                                        t.status === 'WaitingForPOS' ? 'text-amber-400 animate-pulse font-bold' :
+                                        t.status === 'DOWNLOADING' || t.status === 'INSTALLING' || t.status === 'VERIFYING' ? 'text-indigo-400' :
+                                        t.status === 'FAILED' ? 'text-rose-400' : 'text-slate-400'
+                                      }`}>
+                                        {t.status === 'WaitingForPOS' ? '⚠️ Kasir Masih Buka (Menunggu Tutup)' : t.status} ({t.progress}%)
+                                      </span>
+                                    </div>
+                                    {t.error_message && (
+                                      <div className="text-[10px] text-rose-400 truncate max-w-[260px]" title={t.error_message}>
+                                        ❌ {t.error_message}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="flex items-center space-x-1">
+                                    {t.status === 'WaitingForPOS' && (
+                                      <button
+                                        onClick={() => handleTerminalAction(t.terminal_id, 'CLOSE_POS')}
+                                        title="Tutup Quinos POS pada terminal ini secara remote sekarang agar update berjalan"
+                                        className="bg-amber-600/30 hover:bg-amber-600/50 text-amber-200 border border-amber-500/40 text-[11px] font-semibold px-2.5 py-1 rounded shadow-sm flex items-center space-x-1 transition">
+                                        <span>⚡ Tutup POS</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
 
                         {dep.failed_count > 0 && (
                           <div className="mt-2 text-xs text-rose-400 flex items-center space-x-1">
@@ -873,6 +965,20 @@
                       onChange={e => setDeployNotes(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white"
                     />
+                  </div>
+
+                  <div className="flex items-start space-x-2.5 bg-slate-950/80 p-3 rounded-lg border border-slate-800">
+                    <input 
+                      type="checkbox" 
+                      id="deployForceCloseCheck"
+                      checked={deployForceClose}
+                      onChange={e => setDeployForceClose(e.target.checked)}
+                      className="mt-0.5 rounded border-slate-700 text-amber-500 focus:ring-0 cursor-pointer"
+                    />
+                    <label htmlFor="deployForceCloseCheck" className="text-slate-300 font-medium cursor-pointer">
+                      <span className="text-amber-300 font-bold block mb-0.5">⚡ Force Close POS & Auto-Restart (Rekomendasi)</span>
+                      Jika aplikasi kasir sedang dibuka, server akan otomatis meminta kasir menutup POS, lalu membuka kembali versi terbaru secara otomatis setelah update berhasil.
+                    </label>
                   </div>
 
                   <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-amber-300 text-[11px]">
