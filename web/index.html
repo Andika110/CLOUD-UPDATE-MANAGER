@@ -228,7 +228,7 @@
             body: JSON.stringify({ terminal_id: terminalId, command })
           });
           if (!res.ok) throw new Error(await res.text());
-          alert("Perintah berhasil dimasukkan ke antrean terminal!");
+          alert(`Perintah '${command}' berhasil dikirim ke antrean server!\nTerminal kasir akan mengeksekusi perintah dalam 3-8 detik saat heartbeat berikutnya.`);
           fetchData();
         } catch (err) {
           alert("Gagal kirim perintah: " + err.message);
@@ -538,21 +538,39 @@
                               {t.update_status || 'IDLE'}
                             </span>
                           </td>
-                          <td className="px-4 py-3 text-right space-x-1">
+                          <td className="px-4 py-3 text-right space-x-1.5 whitespace-nowrap">
                             <button 
                               onClick={() => handleTerminalAction(t.id, 'CHECK_UPDATE')}
+                              title="Picu pengecekan update sekarang"
                               className="text-[11px] px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700">
-                              Check
+                              🔍 Check
                             </button>
+                            {t.pos_running ? (
+                              <button 
+                                onClick={() => handleTerminalAction(t.id, 'CLOSE_POS')}
+                                title="Tutup aplikasi POS di kasir"
+                                className="text-[11px] px-2 py-1 bg-amber-950/40 hover:bg-amber-900/60 text-amber-300 rounded border border-amber-800/40">
+                                ⏹ Tutup POS
+                              </button>
+                            ) : (
+                              <button 
+                                onClick={() => handleTerminalAction(t.id, 'START_POS')}
+                                title="Buka aplikasi POS di kasir"
+                                className="text-[11px] px-2 py-1 bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-300 rounded border border-emerald-800/40">
+                                ▶ Buka POS
+                              </button>
+                            )}
                             <button 
                               onClick={() => handleTerminalAction(t.id, 'RESTART_POS')}
+                              title="Tutup lalu buka kembali aplikasi POS"
                               className="text-[11px] px-2 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded border border-slate-700">
-                              Restart POS
+                              🔄 Restart POS
                             </button>
                             <button 
                               onClick={() => handleDeleteTerminal(t.id, t.terminal_code)}
+                              title="Hapus kasir ini dari daftar"
                               className="text-[11px] px-2 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 rounded border border-rose-800/40">
-                              Hapus
+                              🗑 Hapus
                             </button>
                           </td>
                         </tr>
